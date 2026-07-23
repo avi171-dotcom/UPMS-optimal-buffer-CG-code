@@ -1,30 +1,3 @@
-"""
-flowshop.py
-============
-Blocking Flow Shop (3 jobs x 3 workstations) — research / thesis demo library.
-
-Contains:
-  1. Random instance generator
-  2. Exact timing simulators (forward recursion) for:
-       - Blocking flow shop (NO intermediate buffer)
-       - Buffer flow shop   (machine released immediately after unloading)
-  3. MILP formulations (position-based, Ronconi-style blocking constraints)
-     solved with scipy.optimize.milp (HiGHS, bundled with scipy -> no
-     external solver / internet connection required)
-  4. A Dantzig-Wolfe style Column Generation solver:
-       - columns          = complete job permutations (schedules)
-       - RMP              = set-partitioning LP over generated columns
-       - pricing problem  = generates the column (permutation) with the
-                             most negative reduced cost given RMP duals
-       - iterates until no improving column is found
-       - final integer restricted master problem gives the integer solution
-     A buffer-aware variant simply swaps the timing recursion used to
-     evaluate a column's cost (Cmax).
-
-All numbers are deterministic for a given random seed so that the four
-scenarios (MILP / CG  x  no-buffer / buffer) are solved on the *same*
-instance and are therefore directly comparable.
-"""
 
 import itertools
 import time
