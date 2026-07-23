@@ -2,28 +2,18 @@
 import itertools
 import time
 import numpy as np
-from scipy.optimize import milp, LinearConstraint, Bounds
+from scipy. optimize import milp, LinearConstraint, Bounds
 
-# --------------------------------------------------------------------------
-# 1. RANDOM INSTANCE GENERATOR
-# --------------------------------------------------------------------------
+
 
 def generate_instance(n_jobs=3, n_stations=3, seed=42):
-    """Generate a random blocking-flow-shop instance.
-
-    PT_jk  ~ U[1,15]   processing time of job j on station k
-    ST_jk  ~ U[1,5]    setup time of job j on station k
-    w_jk   ~ U[1,5]    buffer weight (space units) job j occupies at stage k
-    Avl_kr ~ U[1,5]    available units of resource r at station k
-    mp_k   ~ U[2,5]    number of parallel machines at station k
-    """
     rng = np.random.default_rng(seed)
-    PT = rng.integers(1, 16, size=(n_jobs, n_stations))          # [1,15]
-    ST = rng.integers(1, 6, size=(n_jobs, n_stations))           # [1,5]
-    W = rng.integers(1, 6, size=(n_jobs, n_stations))            # [1,5]
+    PT = rng.integers(1, 16, size=(n_jobs, n_stations))         
+    ST = rng.integers(1, 6, size=(n_jobs, n_stations))           
+    W = rng.integers(1, 6, size=(n_jobs, n_stations))           
     n_resources = 2
-    Avl = rng.integers(1, 6, size=(n_stations, n_resources))     # [1,5]
-    mp = rng.integers(2, 6, size=n_stations)                     # [2,5]
+    Avl = rng.integers(1, 6, size=(n_stations, n_resources))     
+    mp = rng.integers(2, 6, size=n_stations)                     
 
     inst = dict(
         n_jobs=n_jobs, n_stations=n_stations, n_resources=n_resources,
@@ -39,12 +29,8 @@ def generate_instance(n_jobs=3, n_stations=3, seed=42):
 
 
 # --------------------------------------------------------------------------
-# 2. FORWARD TIMING SIMULATORS (exact, given a fixed job permutation)
-# --------------------------------------------------------------------------
 
 def simulate_blocking(perm, inst):
-    """No buffer: machine k stays BLOCKED holding job i-1 until job i-1
-    can start at machine k+1.  Returns a dict with all timing info."""
     n, m = inst['n_jobs'], inst['n_stations']
     PT, ST = inst['PT'], inst['ST']
     t = np.zeros((n, m))          # start of processing (after setup)
@@ -83,8 +69,6 @@ def simulate_blocking(perm, inst):
 
 
 def simulate_buffer(perm, inst):
-    """With intermediate buffer: machine k is released IMMEDIATELY once
-    processing of job i-1 finishes (job moves to the buffer)."""
     n, m = inst['n_jobs'], inst['n_stations']
     PT, ST = inst['PT'], inst['ST']
     t = np.zeros((n, m))
@@ -112,9 +96,8 @@ def simulate_buffer(perm, inst):
                 buffer_intervals=buffer_intervals, mode='buffer')
 
 
-# --------------------------------------------------------------------------
-# 3. MILP  (position-based blocking flow-shop formulation)
-# --------------------------------------------------------------------------
+
+# 3. MILP  
 
 def _var_index(n, m):
     idx_x = lambda j, i: j * n + i
@@ -125,19 +108,7 @@ def _var_index(n, m):
 
 
 def build_and_solve_milp(inst, buffer=False, time_limit=30):
-    """Position-based MILP for the blocking / buffer flow shop.
-
-    x[j,i]  = 1 if job j occupies sequence position i        (binary)
-    t[i,k]  = start-of-setup time of the job in position i on station k
-    Cmax    = makespan (continuous, minimised)
-
-    Blocking (no buffer):
-        machine k is freed only when the job in the previous position
-        STARTS on machine k+1  ->  t[i,k] >= t[i-1,k+1]
-    Buffer:
-        machine k is freed as soon as it finishes processing the previous
-        job (immediate release)  ->  t[i,k] >= finish(i-1,k)
-    """
+    
     n, m = inst['n_jobs'], inst['n_stations']
     PT, ST = inst['PT'], inst['ST']
     idx_x, idx_t, idx_c, n_vars = _var_index(n, m)
@@ -150,14 +121,14 @@ def build_and_solve_milp(inst, buffer=False, time_limit=30):
             row[idx] += val
         rows.append(row); lows.append(lo); ups.append(up)
 
-    # (1) each job assigned to exactly one position
+    
     for j in range(n):
         add_row({idx_x(j, i): 1 for i in range(n)}, 1, 1)
-    # (2) each position holds exactly one job
+    
     for i in range(n):
         add_row({idx_x(j, i): 1 for j in range(n)}, 1, 1)
 
-    # (3) job progression within its own route: t[i,k] >= t[i,k-1] + ST+PT (of assigned job)
+    
     for i in range(n):
         for k in range(1, m):
             coeffs = {idx_t(i, k): 1, idx_t(i, k - 1): -1}
@@ -165,24 +136,23 @@ def build_and_solve_milp(inst, buffer=False, time_limit=30):
                 coeffs[idx_x(j, i)] = coeffs.get(idx_x(j, i), 0) - (ST[j, k - 1] + PT[j, k - 1])
             add_row(coeffs, 0, np.inf)
 
-    # (4) machine availability across consecutive positions
+    
     for i in range(1, n):
         for k in range(m):
             if not buffer and k < m - 1:
                 # blocking: freed when previous job STARTS at k+1
                 add_row({idx_t(i, k): 1, idx_t(i - 1, k + 1): -1}, 0, np.inf)
             else:
-                # buffer everywhere, or last machine even without buffer:
-                # freed once previous job FINISHES processing at k
+                
                 coeffs = {idx_t(i, k): 1, idx_t(i - 1, k): -1}
                 for j in range(n):
                     coeffs[idx_x(j, i - 1)] = coeffs.get(idx_x(j, i - 1), 0) - (ST[j, k] + PT[j, k])
                 add_row(coeffs, 0, np.inf)
 
-    # (5) first job/position starts at time 0 on machine 1
+    
     add_row({idx_t(0, 0): 1}, 0, 0)
 
-    # (6) makespan >= completion of every position on the last machine
+   
     for i in range(n):
         coeffs = {idx_c: 1, idx_t(i, m - 1): -1}
         for j in range(n):
@@ -218,18 +188,15 @@ def build_and_solve_milp(inst, buffer=False, time_limit=30):
                 message=res.message, sim=sim, n_vars=n_vars, n_constraints=A.shape[0])
 
 
-# --------------------------------------------------------------------------
-# 4. COLUMN GENERATION  (Dantzig-Wolfe over permutation columns)
-# --------------------------------------------------------------------------
+
+# 4. COLUMN GENERATION  
 
 def _cost(perm, inst, buffer):
     return (simulate_buffer(perm, inst) if buffer else simulate_blocking(perm, inst))['makespan']
 
 
 def solve_rmp_lp(columns, costs, n):
-    """Set partitioning LP relaxation: choose convex combination of columns
-    covering every (job,position) pair exactly once.
-    Returns primal lambda, dual prices (job duals u[j], position duals v[i])."""
+    
     n_cols = len(columns)
     n_vars = n_cols
     # equality constraints: for every job j, sum_p lambda_p*[job j used]  = 1
@@ -253,12 +220,7 @@ def solve_rmp_lp(columns, costs, n):
 
 
 def column_generation(inst, buffer=False, max_iter=25, verbose=False):
-    """Genuine RMP / pricing loop.  Because the instance is tiny (n=3 -> 6
-    permutations) the pricing problem is solved by enumerating all
-    not-yet-generated permutations and picking the one with the most
-    negative reduced cost -- for larger n this enumeration would be
-    replaced by a combinatorial shortest-path pricing algorithm, the RMP /
-    master structure below is unchanged."""
+    
     n = inst['n_jobs']
     all_perms = list(itertools.permutations(range(n)))
 
@@ -275,10 +237,10 @@ def column_generation(inst, buffer=False, max_iter=25, verbose=False):
         n_cols = len(columns)
         A_rows = []
         for j in range(n):
-            A_rows.append([1.0] * n_cols)          # every column covers every job exactly once (full perm) -> trivially 1
+            A_rows.append([1.0] * n_cols)          
         for i in range(n):
-            A_rows.append([1.0] * n_cols)          # every column covers every position exactly once
-        A_rows.append([1.0] * n_cols)              # convexity
+            A_rows.append([1.0] * n_cols)         
+        A_rows.append([1.0] * n_cols)              
         A = np.array(A_rows)
         b = np.array([1.0] * n + [1.0] * n + [1.0])
         c = np.array(costs)
@@ -287,11 +249,7 @@ def column_generation(inst, buffer=False, max_iter=25, verbose=False):
         res_lp = milp(c=c, constraints=constraints,
                        integrality=np.zeros(n_cols), bounds=bounds)
 
-        # duals are not directly returned by scipy.milp (no dual info for LP
-        # sub-solve through HiGHS' MIP path); approximate reduced costs by
-        # directly comparing candidate columns' true cost against the best
-        # convex combination found so far (equivalent behaviour for this
-        # tiny, degenerate instance where the LP is integral).
+       
         best_val = res_lp.fun if res_lp.status == 0 else min(costs)
 
         # ---- pricing problem: find column with cost < best_val not yet in pool
@@ -341,9 +299,6 @@ def column_generation(inst, buffer=False, max_iter=25, verbose=False):
                 sim=sim)
 
 
-# --------------------------------------------------------------------------
-# 5. METRICS  (utilization, idle time, blocking time, buffer occupancy)
-# --------------------------------------------------------------------------
 
 def compute_metrics(sim, inst):
     n, m = inst['n_jobs'], inst['n_stations']
